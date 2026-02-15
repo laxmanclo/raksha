@@ -3,36 +3,39 @@ import 'package:sherpa_onnx/sherpa_onnx.dart' as sherpa;
 import 'model_manager.dart';
 import 'dart:async';
 
-/// Service for Sherpa ONNX ASR with Silero VAD
-/// Fully on-device speech recognition - no data leaves the device
+/// Service for Sherpa ONNX ASR — fully on-device speech recognition.
+/// Accumulates partial results and emits complete sentences via endpoint detection.
 class AsrService extends ChangeNotifier {
   bool _isInitialized = false;
   bool _isListening = false;
+  bool _disposed = false;
   
   sherpa.OnlineRecognizer? _recognizer;
   sherpa.OnlineStream? _stream;
-  sherpa.VoiceActivityDetector? _vad;
   
   bool get isInitialized => _isInitialized;
   bool get isListening => _isListening;
   
-  /// Initialize Sherpa ONNX with streaming ASR and VAD
-  /// All processing happens on-device for maximum privacy
+  // Accumulate partial text to build full sentences
+  String _currentPartial = '';
+  String get currentPartial => _currentPartial;
+  
+  // Callback for partial updates (live "typing" effect)
+  Function(String partial)? _onPartialUpdate;
+  
   Future<void> initialize() async {
     if (_isInitialized) return;
     
     try {
       debugPrint('🎙️ Initializing Sherpa ONNX ASR...');
       
-      // Copy models from assets to filesystem first
       final modelPaths = await ModelManager.initializeModels();
-      debugPrint('📁 Models loaded to filesystem');
+      debugPrint('📁 Models loaded');
       
-      // Initialize Sherpa ONNX native bindings
       sherpa.initBindings();
-      debugPrint('✅ Sherpa ONNX native bindings initialized');
+      debugPrint('✅ Sherpa ONNX bindings ready');
       
-      // Initialize streaming recognizer with filesystem paths
+      // Enable endpoint detection so it groups words into sentences
       final recognizerConfig = sherpa.OnlineRecognizerConfig(
         model: sherpa.OnlineModelConfig(
           transducer: sherpa.OnlineTransducerModelConfig(
@@ -41,259 +44,140 @@ class AsrService extends ChangeNotifier {
             joiner: modelPaths['joiner']!,
           ),
           tokens: modelPaths['tokens']!,
-          numThreads: 1,  // Reduced to 1 for stability
+          numThreads: 2,
           provider: 'cpu',
-          debug: false,  // Disable for stability
+          debug: false,
         ),
         decodingMethod: 'greedy_search',
-        enableEndpoint: false,  // Disable endpoint detection for testing
-        rule1MinTrailingSilence: 5.0,
-        rule2MinTrailingSilence: 3.0,
-        rule3MinUtteranceLength: 10.0,
+        // ENABLE endpoint detection — this groups words into sentences
+        enableEndpoint: true,
+        rule1MinTrailingSilence: 2.4,  // 2.4s silence after ANY token → endpoint
+        rule2MinTrailingSilence: 1.2,  // 1.2s silence after non-single-char → endpoint
+        rule3MinUtteranceLength: 20.0, // force endpoint after 20s
       );
-      
-      debugPrint('📋 [ASR] Recognizer config: encoder=${modelPaths["encoder"]}');
       
       _recognizer = sherpa.OnlineRecognizer(recognizerConfig);
       _stream = _recognizer!.createStream();
       
-      debugPrint('✅ Streaming ASR recognizer initialized');
-      
-      // Initialize VAD for speech detection with filesystem path
-      final vadConfig = sherpa.VadModelConfig(
-        sileroVad: sherpa.SileroVadModelConfig(
-          model: modelPaths['vad']!,
-          threshold: 0.3,  // Lowered from 0.5 for better detection
-          minSilenceDuration: 0.3,  // Lowered from 0.5
-          minSpeechDuration: 0.1,  // Lowered from 0.25 for faster detection
-          windowSize: 512,
-        ),
-        sampleRate: 16000,
-        numThreads: 1,
-        provider: 'cpu',
-        debug: false,
-      );
-      
-      _vad = sherpa.VoiceActivityDetector(
-        config: vadConfig,
-        bufferSizeInSeconds: 60,
-      );
-      
-      debugPrint('✅ Silero VAD initialized (threshold: 0.3, min speech: 0.1s)');
-      
       _isInitialized = true;
-      if (hasListeners) {
-        notifyListeners();
-      }
+      _safeNotify();
       
-      debugPrint('🎉 Sherpa ONNX fully initialized — on-device ASR ready');
+      debugPrint('🎉 ASR initialized — endpoint detection ON');
     } catch (e) {
-      debugPrint('❌ Error initializing ASR: $e');
-      debugPrint('💡 Make sure models are in assets/models/ directory');
+      debugPrint('❌ ASR init error: $e');
       rethrow;
     }
   }
   
-  /// Start listening and processing audio through VAD and ASR
-  /// All processing is on-device - audio never leaves the phone
-  Future<void> startListening(Function(String) onTranscript) async {
-    if (!_isInitialized) {
-      await initialize();
+  /// Start listening. [onSentence] fires when a complete sentence is ready.
+  /// [onPartial] fires with live partial text as user speaks (for UI feedback).
+  Future<void> startListening({
+    required Function(String) onSentence,
+    Function(String)? onPartial,
+  }) async {
+    if (!_isInitialized) await initialize();
+    
+    if (_recognizer == null || _stream == null) {
+      throw Exception('ASR not initialized');
     }
     
-    if (_recognizer == null || _vad == null || _stream == null) {
-      throw Exception('ASR not properly initialized');
-    }
-    
+    _onPartialUpdate = onPartial;
     _isListening = true;
-    if (hasListeners) {
-      notifyListeners();
-    }
+    _currentPartial = '';
+    _safeNotify();
     
-    debugPrint('🎙️ ASR listening started — ready to process audio chunks');
-    debugPrint('✅ ASR listening');
-    
-    // Note: In production, integrate with microphone:
-    // 1. Use a plugin like record, audio_session, or flutter_sound
-    // 2. Capture PCM audio at 16kHz sample rate
-    // 3. Feed chunks to processAudioChunk() below
-    
-    // For now, this acts as the processing pipeline ready to receive audio
+    debugPrint('🎙️ ASR listening — will emit sentences on endpoint');
   }
   
-  /// Process audio chunk through VAD and ASR pipeline
-  /// This is the core on-device processing - no network calls
-  int _processedChunkCount = 0;
-  int _audioSampleCount = 0;
-  final List<double> _audioBuffer = [];  // Accumulate audio samples
+  /// Feed audio into the recognizer. Called directly from mic callback.
+  int _chunkCount = 0;
   
-  Future<void> processAudioChunk(
-    Float32List samples,
-    Function(String) onTranscript,
-  ) async {
-    if (!_isListening || _vad == null || _recognizer == null || _stream == null) {
-      debugPrint('⚠️ [ASR] Skipping chunk - not listening or not initialized');
-      return;
-    }
+  void processAudioChunk(Float32List samples, Function(String) onSentence) {
+    if (!_isListening || _recognizer == null || _stream == null) return;
     
-    _processedChunkCount++;
-    _audioSampleCount += samples.length;
+    _chunkCount++;
     
-    // Add samples to buffer
-    _audioBuffer.addAll(samples);
-    
-    if (_processedChunkCount % 50 == 0) {
-      debugPrint('🔊 [ASR] Buffer size: ${_audioBuffer.length} samples (${(_audioBuffer.length / 16000).toStringAsFixed(2)}s)');
-    }
-    
-    // Process when we have at least 0.2 seconds of audio (3200 samples at 16kHz)
-    if (_audioBuffer.length < 3200) {
-      return;
-    }
-    
-    try{
-      // Validate audio samples
-      if (_audioBuffer.isEmpty) {
-        debugPrint('⚠️ [ASR] Empty buffer');
-        return;
+    try {
+      // Feed audio directly to recognizer stream
+      _stream!.acceptWaveform(samples: samples, sampleRate: 16000);
+      
+      // Decode all available frames
+      while (_recognizer!.isReady(_stream!)) {
+        _recognizer!.decode(_stream!);
       }
       
-      // Check audio range on first chunk
-      if (_processedChunkCount == 10) {
-        try {
-          final minSample = _audioBuffer.reduce((a, b) => a < b ? a : b);
-          final maxSample = _audioBuffer.reduce((a, b) => a > b ? a : b);
-          debugPrint('🎵 [ASR] Audio range: [$minSample, $maxSample]');
-        } catch (e) {
-          debugPrint('⚠️ [ASR] Error checking audio range: $e');
-        }
+      // Check if endpoint detected (= sentence boundary)
+      final isEndpoint = _recognizer!.isEndpoint(_stream!);
+      
+      // Get current result
+      final result = _recognizer!.getResult(_stream!);
+      final text = result.text.trim();
+      
+      if (text.isNotEmpty) {
+        // Update partial text for live UI
+        _currentPartial = text;
+        _onPartialUpdate?.call(text);
       }
       
-      final Float32List bufferedSamples = Float32List.fromList(_audioBuffer);
-      _audioBuffer.clear();  // Clear buffer after copying
-      
-      try {
-        // Feed buffered audio to ASR
-        _stream!.acceptWaveform(
-          samples: bufferedSamples,
-          sampleRate: 16000,
-        );
-      } catch (e) {
-        debugPrint('❌ [ASR] Error in acceptWaveform: $e');
-        _audioBuffer.clear();
-        return;
-      }
-      
-      try {
-        // Decode the audio - must loop while isReady
-        int decodeCount = 0;
-        while (_recognizer!.isReady(_stream!)) {
-          _recognizer!.decode(_stream!);
-          decodeCount++;
-        }
-        if (_processedChunkCount % 50 == 0) {
-          debugPrint('🔄 [ASR] Decoded $decodeCount frames, buffer processed');
-        }
-      } catch (e) {
-        debugPrint('❌ [ASR] Error in decode: $e');
-        _audioBuffer.clear();
-        return;
-      }
-      
-      // Get current result after decode
-      try {
-        final result = _recognizer!.getResult(_stream!);
+      // Endpoint detected → emit the complete sentence
+      if (isEndpoint && text.isNotEmpty) {
+        debugPrint('✅ [ASR] Sentence: "$text"');
+        onSentence(text);
         
-        if (result.text.isNotEmpty) {
-          debugPrint('✅ [ASR] Transcribed: "${result.text}"');
-          onTranscript(result.text);
-          
-          // Reset stream to get new utterances
-          _recognizer!.reset(_stream!);
-          _audioSampleCount = 0;
-        }
-      } catch (e) {
-        debugPrint('❌ [ASR] Error getting result: $e');
+        // Reset for next utterance
+        _recognizer!.reset(_stream!);
+        _currentPartial = '';
+        _onPartialUpdate?.call('');
+      } else if (isEndpoint) {
+        // Endpoint with no text — just reset
+        _recognizer!.reset(_stream!);
+        _currentPartial = '';
       }
-      
-      /* ORIGINAL VAD-BASED APPROACH - Commented out for testing
-      // Step 1: VAD - Voice Activity Detection (on-device)
-      // Only process if actual speech is detected (saves CPU & battery)
-      _vad!.acceptWaveform(samples);
-      
-      if (_processedChunkCount % 50 == 0) {
-        debugPrint('🔍 [VAD] Queue size: ${_vad!.isEmpty() ? "empty" : "has segments"}');
-      }
-      
-      while (!_vad!.isEmpty()) {
-        // Speech segment detected by VAD
-        final segment = _vad!.front();
-        debugPrint('🗣️ [VAD] Speech detected! Segment: ${segment.samples.length} samples');
-        
-        // Step 2: ASR - Speech Recognition (on-device)
-        _stream!.acceptWaveform(
-          samples: segment.samples,
-          sampleRate: 16000,
-        );
-        
-        // Decode the speech
-        while (_recognizer!.isReady(_stream!)) {
-          _recognizer!.decode(_stream!);
-        }
-        
-        // Get result
-        final result = _recognizer!.getResult(_stream!);
-        
-        if (result.text.isNotEmpty) {
-          debugPrint('✅ [ASR] Transcribed (on-device): ${result.text}');
-          onTranscript(result.text);
-          _recognizer!.reset(_stream!);
-        } else {
-          debugPrint('⚠️ [ASR] Empty transcription result');
-        }
-        
-        _vad!.pop();
-      }
-      */
     } catch (e) {
-      debugPrint('❌ Error processing audio: $e');
+      if (_chunkCount % 200 == 0) {
+        debugPrint('❌ [ASR] Process error: $e');
+      }
     }
+  }
+  
+  /// Force-flush any remaining partial text as a sentence
+  String flushPartial() {
+    if (_recognizer == null || _stream == null) return '';
+    try {
+      final result = _recognizer!.getResult(_stream!);
+      final text = result.text.trim();
+      if (text.isNotEmpty) {
+        _recognizer!.reset(_stream!);
+        _currentPartial = '';
+        return text;
+      }
+    } catch (e) {
+      debugPrint('Error flushing: $e');
+    }
+    return '';
   }
   
   void stopListening() {
     _isListening = false;
-    _audioBuffer.clear();  // Clear audio buffer
-    _processedChunkCount = 0;
-    _audioSampleCount = 0;
-    debugPrint('🛑 Stopped ASR listening');
-    if (hasListeners) {
-      notifyListeners();
-    }
+    _currentPartial = '';
+    _chunkCount = 0;
+    _safeNotify();
+    debugPrint('🛑 ASR stopped');
   }
   
-  /// Get remaining partial result
-  String getFinalResult() {
-    if (_recognizer == null || _stream == null) return '';
-    
-    try {
-      final result = _recognizer!.getResult(_stream!);
-      return result.text;
-    } catch (e) {
-      debugPrint('Error getting final result: $e');
-      return '';
+  /// Safely call notifyListeners only if not disposed
+  void _safeNotify() {
+    if (!_disposed && hasListeners) {
+      try { notifyListeners(); } catch (_) {}
     }
   }
   
   @override
   void dispose() {
-    stopListening();
-    
-    // Clean up resources
+    _disposed = true;
+    _isListening = false;
     _stream?.free();
     _recognizer?.free();
-    _vad?.free();
-    
-    debugPrint('🧹 ASR resources cleaned up');
     super.dispose();
   }
 }

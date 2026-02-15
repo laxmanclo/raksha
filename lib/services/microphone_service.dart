@@ -105,8 +105,8 @@ class MicrophoneService extends ChangeNotifier {
     }
   }
   
-  /// Stop capturing audio
-  Future<void> stopRecording() async {
+  /// Stop capturing audio. [silent] skips notifyListeners (use during dispose).
+  Future<void> stopRecording({bool silent = false}) async {
     if (!_isRecording) return;
     
     try {
@@ -118,7 +118,9 @@ class MicrophoneService extends ChangeNotifier {
       await _recorder.stop();
       
       debugPrint('🛑 Microphone recording stopped');
-      if (hasListeners) notifyListeners();
+      if (!silent && hasListeners) {
+        try { notifyListeners(); } catch (_) {}
+      }
     } catch (e) {
       debugPrint('❌ Error stopping microphone recording: $e');
     }

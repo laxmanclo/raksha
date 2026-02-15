@@ -73,10 +73,12 @@ class TranscriptLine {
   final String text;
   final DateTime timestamp;
   final bool isCleaned;
+  final bool isScammer;
 
   TranscriptLine({
     required this.text,
     required this.timestamp,
     this.isCleaned = false,
+    this.isScammer = false,
   });
 }

@@ -39,22 +39,22 @@ class RakshaApp extends StatelessWidget {
         debugShowCheckedModeBanner: false,
         theme: ThemeData(
           brightness: Brightness.dark,
-          scaffoldBackgroundColor: const Color(0xFF0A0E21),
+          scaffoldBackgroundColor: const Color(0xFF0D1117),
           primaryColor: const Color(0xFF6C63FF),
           colorScheme: const ColorScheme.dark(
             primary: Color(0xFF6C63FF),
             secondary: Color(0xFFFF6584),
-            surface: Color(0xFF1D1F33),
+            surface: Color(0xFF161B22),
             error: Color(0xFFFF4757),
           ),
           textTheme: GoogleFonts.interTextTheme(
             ThemeData.dark().textTheme,
           ),
           cardTheme: CardThemeData(
-            color: const Color(0xFF1D1F33),
-            elevation: 8,
+            color: const Color(0xFF161B22),
+            elevation: 0,
             shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(20),
+              borderRadius: BorderRadius.circular(14),
             ),
           ),
         ),

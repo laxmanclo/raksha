@@ -8,17 +8,22 @@ class CallService extends ChangeNotifier {
   final List<TranscriptLine> _transcript = [];
   Duration _callDuration = Duration.zero;
   Timer? _durationTimer;
+  
+  // Live partial text from ASR (what the user is currently saying)
+  String _livePartial = '';
 
   bool get isListening => _isListening;
   bool get isCallActive => _isCallActive;
   List<TranscriptLine> get transcript => List.unmodifiable(_transcript);
   Duration get callDuration => _callDuration;
+  String get livePartial => _livePartial;
 
   void startCall() {
     _isCallActive = true;
     _isListening = true;
     _callDuration = Duration.zero;
     _transcript.clear();
+    _livePartial = '';
     
     _durationTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
       _callDuration = Duration(seconds: _callDuration.inSeconds + 1);
@@ -28,29 +33,38 @@ class CallService extends ChangeNotifier {
     notifyListeners();
   }
 
-  void endCall() {
+  void endCall({bool silent = false}) {
     _isCallActive = false;
     _isListening = false;
+    _livePartial = '';
     _durationTimer?.cancel();
-    notifyListeners();
+    if (!silent) {
+      try { notifyListeners(); } catch (_) {}
+    }
   }
 
-  void addTranscriptLine(String text, {bool isCleaned = false}) {
+  void addTranscriptLine(String text, {bool isCleaned = false, bool isScammer = false}) {
+    if (text.trim().isEmpty) return;
     _transcript.add(TranscriptLine(
-      text: text,
+      text: text.trim(),
       timestamp: DateTime.now(),
       isCleaned: isCleaned,
+      isScammer: isScammer,
     ));
-    notifyListeners();
+    _livePartial = '';  // Clear partial when sentence is committed
+    try { notifyListeners(); } catch (_) {}
   }
-
-  void toggleListening() {
-    _isListening = !_isListening;
-    notifyListeners();
+  
+  void updateLivePartial(String partial) {
+    if (partial != _livePartial) {
+      _livePartial = partial;
+      notifyListeners();
+    }
   }
 
   void clearTranscript() {
     _transcript.clear();
+    _livePartial = '';
     notifyListeners();
   }
 
