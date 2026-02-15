@@ -3,6 +3,7 @@ import 'package:flutter_animate/flutter_animate.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:provider/provider.dart';
 import 'dart:async';
+import 'dart:typed_data';
 import '../services/call_service.dart';
 import '../services/threat_service.dart';
 import '../services/tts_service.dart';
@@ -12,6 +13,8 @@ import '../services/microphone_service.dart';
 import '../widgets/threat_meter.dart';
 import '../widgets/transcript_display.dart';
 import '../widgets/takeover_buttons.dart';
+
+// ignore: unused_import - Float32List used in callback type
 
 class CallMonitoringScreen extends StatefulWidget {
   const CallMonitoringScreen({super.key});
@@ -23,10 +26,12 @@ class CallMonitoringScreen extends StatefulWidget {
 class _CallMonitoringScreenState extends State<CallMonitoringScreen> {
   final TextEditingController _testInputController = TextEditingController();
   Timer? _analysisTimer;
-  bool _useRealMicrophone = false;
-
-  // Cache provider references so we can safely use them in dispose()
-  late final MicrophoneService _microphoneService;
+  bool _useRealMicrophone = true;  // Default to real mic
+  bool _isInitializingMicrophone = true;  // Start initializing immediately
+  String _micStatus = 'Initializing...';
+  
+  // Store service references to avoid context access in dispose()
+  late final MicrophoneService _micService;
   late final AsrService _asrService;
   late final CallService _callService;
 
@@ -34,13 +39,13 @@ class _CallMonitoringScreenState extends State<CallMonitoringScreen> {
   void initState() {
     super.initState();
     
-    // Save references before the widget is deactivated
-    _microphoneService = context.read<MicrophoneService>();
-    _asrService = context.read<AsrService>();
-    _callService = context.read<CallService>();
-    
-    // Start call monitoring
+    // Start call monitoring and auto-start microphone
     WidgetsBinding.instance.addPostFrameCallback((_) {
+      // Store service references
+      _micService = context.read<MicrophoneService>();
+      _asrService = context.read<AsrService>();
+      _callService = context.read<CallService>();
+      
       _callService.startCall();
       
       // Initialize TTS
@@ -50,6 +55,9 @@ class _CallMonitoringScreenState extends State<CallMonitoringScreen> {
       _analysisTimer = Timer.periodic(const Duration(seconds: 5), (timer) {
         _performAnalysis();
       });
+      
+      // Auto-start microphone pipeline
+      _startRealMicrophoneListening();
     });
   }
 
@@ -58,8 +66,8 @@ class _CallMonitoringScreenState extends State<CallMonitoringScreen> {
     _testInputController.dispose();
     _analysisTimer?.cancel();
     
-    // Stop services using cached references (safe during dispose)
-    _microphoneService.stopRecording();
+    // Stop services using stored references (not context)
+    _micService.stopRecording();
     _asrService.stopListening();
     _callService.endCall();
     
@@ -101,54 +109,88 @@ class _CallMonitoringScreenState extends State<CallMonitoringScreen> {
   }
 
   Future<void> _startRealMicrophoneListening() async {
+    debugPrint('\n🔴 [START] Starting Real Microphone Pipeline...');
     final micService = context.read<MicrophoneService>();
     final asrService = context.read<AsrService>();
     final callService = context.read<CallService>();
     
     try {
-      // Initialize ASR service
+      // Step 1: Initialize ASR (Sherpa ONNX models)
+      if (mounted) setState(() => _micStatus = 'Loading ASR models...');
+      debugPrint('🎯 [STEP 1] Initializing ASR service...');
       await asrService.initialize();
+      debugPrint('✅ [STEP 1] ASR initialized');
       
-      // Define transcript callback
+      // Define the transcript callback
       void onTranscript(String text) {
-        // Strip PII before adding to transcript
+        debugPrint('📝 [TRANSCRIPT] Received: "$text"');
         final cleaned = PiiService.stripPII(text);
         callService.addTranscriptLine(
           cleaned,
           isCleaned: PiiService.containsPII(text),
         );
-        
-        // Trigger analysis
         _performAnalysis();
       }
       
-      // Start ASR listening with callback
+      // Step 2: Start ASR listening
+      if (mounted) setState(() => _micStatus = 'Starting ASR...');
+      debugPrint('🎯 [STEP 2] Starting ASR listening...');
       await asrService.startListening(onTranscript);
+      debugPrint('✅ [STEP 2] ASR listening');
       
-      // Start microphone recording
-      final started = await micService.startRecording();
+      // Step 3: Start microphone with DIRECT callback to ASR
+      // No broadcast stream — mic chunks go directly to ASR
+      if (mounted) setState(() => _micStatus = 'Starting microphone...');
+      debugPrint('🎯 [STEP 3] Starting microphone with direct ASR callback...');
+      
+      int chunkCount = 0;
+      final started = await micService.startRecording(
+        onAudioData: (Float32List audioData) {
+          chunkCount++;
+          if (chunkCount % 100 == 0) {
+            debugPrint('📡 [PIPE] Chunk #$chunkCount → ASR (${audioData.length} samples)');
+          }
+          asrService.processAudioChunk(audioData, onTranscript);
+        },
+      );
+      
       if (!started) {
-        throw Exception('Failed to start microphone');
+        throw Exception('Microphone failed to start — check permissions in Settings');
       }
       
-      // Listen to microphone audio stream and pipe to ASR
-      micService.audioStream?.listen((audioData) {
-        asrService.processAudioChunk(audioData, onTranscript);
-      });
+      debugPrint('✅ [STEP 3] Microphone recording active');
+      debugPrint('🟢 Pipeline: Mic → PCM16 → Float32 → ASR → Transcript');
       
       if (mounted) {
+        setState(() {
+          _useRealMicrophone = true;
+          _isInitializingMicrophone = false;
+          _micStatus = 'Listening...';
+        });
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('🎙️ Real microphone activated')),
+          const SnackBar(
+            content: Text('🎙️ Microphone active — speak now!'),
+            backgroundColor: Colors.green,
+            duration: Duration(seconds: 2),
+          ),
         );
       }
-    } catch (e) {
+    } catch (e, stackTrace) {
+      debugPrint('❌ [ERROR] Pipeline failed: $e');
+      debugPrint('🔎 $stackTrace');
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Error: $e. Falling back to demo mode.')),
-        );
         setState(() {
           _useRealMicrophone = false;
+          _isInitializingMicrophone = false;
+          _micStatus = 'Error: $e';
         });
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Mic error: $e'),
+            backgroundColor: Colors.red,
+            duration: const Duration(seconds: 5),
+          ),
+        );
       }
     }
   }
@@ -158,6 +200,10 @@ class _CallMonitoringScreenState extends State<CallMonitoringScreen> {
     context.read<AsrService>().stopListening();
     
     if (mounted) {
+      setState(() {
+        _useRealMicrophone = false;
+        _micStatus = 'Demo mode';
+      });
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('⌨️ Demo mode activated')),
       );
@@ -284,22 +330,30 @@ class _CallMonitoringScreenState extends State<CallMonitoringScreen> {
               const SizedBox(width: 16),
               // Toggle between Demo and Real Microphone
               IconButton(
-                onPressed: () {
-                  setState(() {
-                    _useRealMicrophone = !_useRealMicrophone;
-                  });
-                  
+                onPressed: _isInitializingMicrophone ? null : () async {
                   if (_useRealMicrophone) {
-                    _startRealMicrophoneListening();
-                  } else {
                     _stopRealMicrophoneListening();
+                  } else {
+                    setState(() => _isInitializingMicrophone = true);
+                    await _startRealMicrophoneListening();
                   }
                 },
-                icon: Icon(
-                  _useRealMicrophone ? Icons.mic : Icons.keyboard,
-                  color: _useRealMicrophone ? Colors.green : Colors.blue,
-                ),
-                tooltip: _useRealMicrophone ? 'Switch to Demo Mode' : 'Switch to Real Microphone',
+                icon: _isInitializingMicrophone
+                    ? const SizedBox(
+                        width: 24,
+                        height: 24,
+                        child: CircularProgressIndicator(
+                          strokeWidth: 2,
+                          valueColor: AlwaysStoppedAnimation<Color>(Colors.orange),
+                        ),
+                      )
+                    : Icon(
+                        _useRealMicrophone ? Icons.mic : Icons.keyboard,
+                        color: _useRealMicrophone ? Colors.green : Colors.blue,
+                      ),
+                tooltip: _isInitializingMicrophone
+                    ? 'Initializing...'
+                    : (_useRealMicrophone ? 'Switch to Demo Mode' : 'Switch to Real Microphone'),
               ),
             ],
           ),
@@ -330,13 +384,19 @@ class _CallMonitoringScreenState extends State<CallMonitoringScreen> {
               Row(
                 children: [
                   Icon(
-                    _useRealMicrophone ? Icons.mic : Icons.keyboard,
-                    color: _useRealMicrophone ? Colors.green : Colors.blue,
+                    _isInitializingMicrophone
+                        ? Icons.sync
+                        : (_useRealMicrophone ? Icons.mic : Icons.keyboard),
+                    color: _isInitializingMicrophone
+                        ? Colors.orange
+                        : (_useRealMicrophone ? Colors.green : Colors.blue),
                     size: 16,
                   ),
                   const SizedBox(width: 8),
                   Text(
-                    _useRealMicrophone ? '🎙️ Real Microphone' : '⌨️ Demo Mode',
+                    _isInitializingMicrophone
+                        ? '⏳ Initializing...'
+                        : (_useRealMicrophone ? '🎙️ Real Microphone' : '⌨️ Demo Mode'),
                     style: GoogleFonts.inter(
                       fontSize: 12,
                       color: Colors.white70,

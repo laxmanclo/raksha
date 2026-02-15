@@ -1,90 +1,106 @@
 import 'dart:async';
 import 'dart:typed_data';
 import 'package:flutter/foundation.dart';
-import 'package:permission_handler/permission_handler.dart';
+import 'package:record/record.dart';
 
 /// Microphone capture service for real-time audio streaming
 /// Captures PCM audio at 16kHz for Sherpa ONNX processing
 class MicrophoneService extends ChangeNotifier {
   bool _isRecording = false;
-  StreamController<Float32List>? _audioStreamController;
-  
-  // Note: For production, you would use a plugin like:
-  // - record: ^5.0.0
-  // - audio_session: ^0.1.0
-  // - flutter_sound: ^9.0.0
-  // - microphone: ^0.3.0
+  final AudioRecorder _recorder = AudioRecorder();
+  StreamSubscription? _recordingSubscription;
   
   bool get isRecording => _isRecording;
-  Stream<Float32List>? get audioStream => _audioStreamController?.stream;
   
-  /// Request microphone permission
-  Future<bool> requestPermission() async {
+  /// Start capturing audio from microphone with a direct callback.
+  /// [onAudioData] is called for every audio chunk as Float32List,
+  /// piped directly — no intermediate stream.
+  Future<bool> startRecording({
+    required void Function(Float32List) onAudioData,
+  }) async {
+    debugPrint('🎤 [MIC] startRecording() called');
+    
+    if (_isRecording) {
+      debugPrint('⚠️ [MIC] Already recording, returning true');
+      return true;
+    }
+    
     try {
-      final status = await Permission.microphone.request();
-      
-      if (status.isGranted) {
-        debugPrint('✅ Microphone permission granted');
-        return true;
-      } else if (status.isDenied) {
-        debugPrint('❌ Microphone permission denied');
-        return false;
-      } else if (status.isPermanentlyDenied) {
-        debugPrint('❌ Microphone permission permanently denied');
-        await openAppSettings();
+      // Use record package's own permission check — avoids conflict
+      // with permission_handler requesting the same permission
+      debugPrint('🔐 [MIC] Checking recorder permission...');
+      final hasPerm = await _recorder.hasPermission();
+      if (!hasPerm) {
+        debugPrint('❌ [MIC] Recorder permission denied');
         return false;
       }
+      debugPrint('✅ [MIC] Recorder permission granted');
       
-      return false;
-    } catch (e) {
-      debugPrint('❌ Error requesting microphone permission: $e');
-      return false;
-    }
-  }
-  
-  /// Start capturing audio from microphone
-  /// Audio is captured at 16kHz PCM format for Sherpa ONNX
-  Future<bool> startRecording() async {
-    if (_isRecording) return true;
-    
-    // Check permission first
-    final hasPermission = await requestPermission();
-    if (!hasPermission) {
-      debugPrint('❌ Cannot start recording without microphone permission');
-      return false;
-    }
-    
-    try {
-      _audioStreamController = StreamController<Float32List>.broadcast();
-      _isRecording = true;
-      notifyListeners();
+      // Start recording with streaming
+      debugPrint('🎙️ [MIC] Starting recorder stream...');
+      final stream = await _recorder.startStream(
+        const RecordConfig(
+          encoder: AudioEncoder.pcm16bits,
+          sampleRate: 16000,
+          numChannels: 1,
+          bitRate: 256000,
+        ),
+      );
+      debugPrint('✅ [MIC] Recorder stream started');
       
-      debugPrint('🎙️ Microphone recording started');
-      
-      // TODO: In production, integrate actual microphone capture
-      // Example with 'record' package:
-      /*
-      final recorder = Record();
-      await recorder.start(
-        path: null, // We want stream, not file
-        encoder: AudioEncoder.pcm16bit,
-        sampleRate: 16000,
-        numChannels: 1,
+      // Listen to audio stream, convert, and call back directly
+      int chunkCount = 0;
+      _recordingSubscription = stream.listen(
+        (Uint8List chunk) {
+          try {
+            if (chunk.isEmpty) return;
+            chunkCount++;
+            
+            // Copy to a fresh buffer to ensure proper byte alignment
+            final alignedBytes = Uint8List.fromList(chunk);
+            
+            // Make sure we have an even number of bytes for Int16
+            final usableLength = alignedBytes.length - (alignedBytes.length % 2);
+            if (usableLength < 2) return;
+            
+            // Convert Uint8List (raw bytes) to Int16List (PCM16)
+            final int16Data = Int16List.view(
+              alignedBytes.buffer,
+              0,
+              usableLength ~/ 2,
+            );
+            
+            // Convert Int16 to Float32 for Sherpa ONNX
+            final float32Data = _convertInt16ToFloat32(int16Data);
+            
+            // Direct callback — no broadcast stream intermediary
+            onAudioData(float32Data);
+            
+            // Log every 50 chunks
+            if (chunkCount % 50 == 0) {
+              debugPrint('🎤 [MIC] Chunk #$chunkCount: ${chunk.length} bytes → ${float32Data.length} samples');
+            }
+          } catch (e) {
+            debugPrint('❌ [MIC ERROR] Processing chunk: $e');
+          }
+        },
+        onError: (e) {
+          debugPrint('❌ [MIC STREAM ERROR] $e');
+        },
+        onDone: () {
+          debugPrint('🏁 [MIC] Recording stream done');
+        },
       );
       
-      // Listen to audio stream
-      recorder.onData.listen((data) {
-        // Convert to Float32List and emit
-        final float32Data = convertToFloat32(data);
-        _audioStreamController?.add(float32Data);
-      });
-      */
+      _isRecording = true;
+      if (hasListeners) notifyListeners();
       
+      debugPrint('✅ Microphone recording active (16kHz, PCM16, mono)');
       return true;
     } catch (e) {
       debugPrint('❌ Error starting microphone recording: $e');
       _isRecording = false;
-      notifyListeners();
+      if (hasListeners) notifyListeners();
       return false;
     }
   }
@@ -95,24 +111,23 @@ class MicrophoneService extends ChangeNotifier {
     
     try {
       _isRecording = false;
-      await _audioStreamController?.close();
-      _audioStreamController = null;
+      
+      await _recordingSubscription?.cancel();
+      _recordingSubscription = null;
+      
+      await _recorder.stop();
       
       debugPrint('🛑 Microphone recording stopped');
-      notifyListeners();
-      
-      // TODO: Stop actual recorder
-      // await recorder.stop();
+      if (hasListeners) notifyListeners();
     } catch (e) {
       debugPrint('❌ Error stopping microphone recording: $e');
     }
   }
   
   /// Convert Int16 PCM data to Float32 for Sherpa ONNX
-  Float32List convertInt16ToFloat32(Int16List int16Data) {
+  Float32List _convertInt16ToFloat32(Int16List int16Data) {
     final float32Data = Float32List(int16Data.length);
     for (int i = 0; i < int16Data.length; i++) {
-      // Normalize from Int16 range [-32768, 32767] to Float32 range [-1.0, 1.0]
       float32Data[i] = int16Data[i] / 32768.0;
     }
     return float32Data;
@@ -121,6 +136,7 @@ class MicrophoneService extends ChangeNotifier {
   @override
   void dispose() {
     stopRecording();
+    _recorder.dispose();
     super.dispose();
   }
 }
