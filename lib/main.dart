@@ -10,15 +10,16 @@ import 'services/microphone_service.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
-  
-  // Set system UI overlay style
+
   SystemChrome.setSystemUIOverlayStyle(
     const SystemUiOverlayStyle(
       statusBarColor: Colors.transparent,
       statusBarIconBrightness: Brightness.light,
+      systemNavigationBarColor: Colors.black,
+      systemNavigationBarIconBrightness: Brightness.light,
     ),
   );
-  
+
   runApp(const RakshaApp());
 }
 
@@ -39,23 +40,37 @@ class RakshaApp extends StatelessWidget {
         debugShowCheckedModeBanner: false,
         theme: ThemeData(
           brightness: Brightness.dark,
-          scaffoldBackgroundColor: const Color(0xFF0D1117),
-          primaryColor: const Color(0xFF6C63FF),
+          scaffoldBackgroundColor: Colors.black,
+          primaryColor: const Color(0xFF34C759),
           colorScheme: const ColorScheme.dark(
-            primary: Color(0xFF6C63FF),
-            secondary: Color(0xFFFF6584),
-            surface: Color(0xFF161B22),
-            error: Color(0xFFFF4757),
+            primary: Color(0xFF34C759),
+            secondary: Color(0xFF30D158),
+            surface: Color(0xFF111111),
+            error: Color(0xFFFF453A),
           ),
-          textTheme: GoogleFonts.interTextTheme(
-            ThemeData.dark().textTheme,
+          textTheme: GoogleFonts.interTextTheme(ThemeData.dark().textTheme),
+          appBarTheme: const AppBarTheme(
+            backgroundColor: Colors.transparent,
+            elevation: 0,
+            centerTitle: true,
           ),
           cardTheme: CardThemeData(
-            color: const Color(0xFF161B22),
+            color: const Color(0xFF111111),
             elevation: 0,
             shape: RoundedRectangleBorder(
               borderRadius: BorderRadius.circular(14),
             ),
+          ),
+          snackBarTheme: SnackBarThemeData(
+            behavior: SnackBarBehavior.floating,
+            backgroundColor: const Color(0xFF1A1A1A),
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(12),
+            ),
+          ),
+          dividerTheme: const DividerThemeData(
+            color: Color(0xFF1A1A1A),
+            thickness: 0.5,
           ),
         ),
         home: const HomeScreen(),

@@ -4,6 +4,13 @@ import 'package:provider/provider.dart';
 import 'package:intl/intl.dart';
 import '../services/call_service.dart';
 
+/// Flowing transcript display.
+///
+/// HCI rationale:
+/// - No card wrapper: the transcript IS the main content, not a widget inside content
+/// - Reverse list: newest at bottom, natural reading flow (like chat)
+/// - Minimal metadata: timestamp is subtle and inline
+/// - Empty state is calm and informative (reduces anxiety during wait)
 class TranscriptDisplay extends StatelessWidget {
   const TranscriptDisplay({super.key});
 
@@ -16,27 +23,20 @@ class TranscriptDisplay extends StatelessWidget {
         if (transcript.isEmpty) {
           return Center(
             child: Column(
-              mainAxisAlignment: MainAxisAlignment.center,
+              mainAxisSize: MainAxisSize.min,
               children: [
                 Icon(
                   Icons.mic_none_rounded,
-                  size: 64,
-                  color: Colors.white.withValues(alpha: 0.3),
+                  size: 48,
+                  color: Colors.white.withValues(alpha: 0.15),
                 ),
-                const SizedBox(height: 16),
+                const SizedBox(height: 12),
                 Text(
-                  'Listening...',
+                  'Waiting for speech',
                   style: GoogleFonts.inter(
-                    fontSize: 16,
-                    color: Colors.white60,
-                  ),
-                ),
-                const SizedBox(height: 8),
-                Text(
-                  'Speech will appear here',
-                  style: GoogleFonts.inter(
-                    fontSize: 13,
-                    color: Colors.white38,
+                    fontSize: 15,
+                    fontWeight: FontWeight.w500,
+                    color: const Color(0xFF333333),
                   ),
                 ),
               ],
@@ -44,134 +44,66 @@ class TranscriptDisplay extends StatelessWidget {
           );
         }
 
-        return Container(
-          decoration: BoxDecoration(
-            color: const Color(0xFF1D1F33),
-            borderRadius: BorderRadius.circular(20),
-            border: Border.all(
-              color: Colors.white.withValues(alpha: 0.1),
-            ),
-          ),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              // Header
-              Padding(
-                padding: const EdgeInsets.all(20),
-                child: Row(
-                  children: [
-                    const Icon(
-                      Icons.subtitles_rounded,
-                      color: Color(0xFF6C63FF),
-                      size: 24,
-                    ),
-                    const SizedBox(width: 12),
-                    Text(
-                      'Live Transcript',
-                      style: GoogleFonts.inter(
-                        fontSize: 16,
-                        fontWeight: FontWeight.w600,
-                        color: Colors.white,
-                      ),
-                    ),
-                    const Spacer(),
-                    Text(
-                      '${transcript.length} lines',
-                      style: GoogleFonts.inter(
-                        fontSize: 12,
-                        color: Colors.white60,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-
-              const Divider(
-                height: 1,
-                color: Color(0xFF2A2D47),
-              ),
-
-              // Transcript Lines
-              Expanded(
-                child: ListView.builder(
-                  padding: const EdgeInsets.all(20),
-                  reverse: true,
-                  itemCount: transcript.length,
-                  itemBuilder: (context, index) {
-                    final reversedIndex = transcript.length - 1 - index;
-                    final line = transcript[reversedIndex];
-                    return _buildTranscriptLine(line);
-                  },
-                ),
-              ),
-            ],
-          ),
+        return ListView.builder(
+          padding: const EdgeInsets.symmetric(vertical: 12),
+          reverse: true,
+          itemCount: transcript.length,
+          itemBuilder: (context, index) {
+            final reversedIndex = transcript.length - 1 - index;
+            final line = transcript[reversedIndex];
+            return _buildLine(line, reversedIndex == transcript.length - 1);
+          },
         );
       },
     );
   }
 
-  Widget _buildTranscriptLine(line) {
-    final timeFormat = DateFormat('HH:mm:ss');
-    
+  Widget _buildLine(dynamic line, bool isLatest) {
+    final timeFormat = DateFormat('HH:mm');
+
     return Padding(
-      padding: const EdgeInsets.only(bottom: 16),
+      padding: const EdgeInsets.only(bottom: 8),
       child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
+        crossAxisAlignment: CrossAxisAlignment.baseline,
+        textBaseline: TextBaseline.alphabetic,
         children: [
-          // Timestamp
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-            decoration: BoxDecoration(
-              color: const Color(0xFF0A0E21),
-              borderRadius: BorderRadius.circular(6),
-            ),
+          // Inline timestamp
+          SizedBox(
+            width: 40,
             child: Text(
               timeFormat.format(line.timestamp),
-              style: GoogleFonts.robotoMono(
-                fontSize: 10,
-                color: Colors.white60,
+              style: GoogleFonts.inter(
+                fontSize: 11,
+                color: const Color(0xFF333333),
+                fontFeatures: const [FontFeature.tabularFigures()],
               ),
             ),
           ),
-          
           const SizedBox(width: 12),
-          
-          // Text
+
+          // Transcript text
           Expanded(
-            child: Column(
+            child: Row(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(
-                  line.text,
-                  style: GoogleFonts.inter(
-                    fontSize: 14,
-                    color: Colors.white,
-                    height: 1.5,
+                Expanded(
+                  child: Text(
+                    line.text,
+                    style: GoogleFonts.inter(
+                      fontSize: 15,
+                      fontWeight: isLatest ? FontWeight.w500 : FontWeight.w400,
+                      color: isLatest ? Colors.white : Colors.white70,
+                      height: 1.45,
+                    ),
                   ),
                 ),
-                
-                // PII Indicator
                 if (line.isCleaned)
                   Padding(
-                    padding: const EdgeInsets.only(top: 4),
-                    child: Row(
-                      children: [
-                        const Icon(
-                          Icons.verified_user_rounded,
-                          size: 12,
-                          color: Color(0xFF5FD068),
-                        ),
-                        const SizedBox(width: 4),
-                        Text(
-                          'PII stripped',
-                          style: GoogleFonts.inter(
-                            fontSize: 10,
-                            color: const Color(0xFF5FD068),
-                            fontWeight: FontWeight.w500,
-                          ),
-                        ),
-                      ],
+                    padding: const EdgeInsets.only(left: 6, top: 2),
+                    child: Icon(
+                      Icons.lock_rounded,
+                      size: 12,
+                      color: const Color(0xFF34C759).withValues(alpha: 0.6),
                     ),
                   ),
               ],

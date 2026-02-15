@@ -12,6 +12,7 @@ import '../services/asr_service.dart';
 import '../services/microphone_service.dart';
 import '../services/api_service.dart';
 import '../models/threat_model.dart';
+import '../widgets/voice_orb.dart';
 
 // ── Interactive Demo Scenarios ──
 // The scammer speaks these via TTS. The user responds naturally.
@@ -80,6 +81,7 @@ class _CallMonitoringScreenState extends State<CallMonitoringScreen> {
   String _status = 'Starting...';
   int _demoLineIndex = 0;
   bool _demoRunning = false;
+  bool _autoTakeoverTriggered = false;
   final ScrollController _scrollController = ScrollController();
   
   late final MicrophoneService _micService;
@@ -110,8 +112,6 @@ class _CallMonitoringScreenState extends State<CallMonitoringScreen> {
   }
 
   // ── Interactive Demo ──
-  // Flow: Scammer speaks via TTS → text appears → pause for user → next line
-  // ASR runs in background to capture user responses too
   Future<void> _initInteractiveDemo() async {
     if (_disposed) return;
     
@@ -119,13 +119,11 @@ class _CallMonitoringScreenState extends State<CallMonitoringScreen> {
       setState(() => _status = 'Connecting...');
       await ApiService.startSession();
       
-      // Also start ASR + mic so user's voice gets captured
       if (!_disposed) setState(() => _status = 'Loading ASR...');
       await _asrService.initialize();
       await _asrService.startListening(
         onSentence: (text) {
           if (_disposed) return;
-          // User's responses go into transcript
           final cleaned = PiiService.stripPII(text);
           _callService.addTranscriptLine(cleaned, isCleaned: PiiService.containsPII(text));
           _scrollToBottom();
@@ -140,6 +138,8 @@ class _CallMonitoringScreenState extends State<CallMonitoringScreen> {
       await _micService.startRecording(
         onAudioData: (Float32List data) {
           if (!_disposed) {
+            // ── Gate: skip mic input while TTS is playing (prevents echo) ──
+            if (TtsService.isSpeakingOrEcho) return;
             _asrService.processAudioChunk(data, (text) {
               if (_disposed) return;
               final cleaned = PiiService.stripPII(text);
@@ -157,7 +157,6 @@ class _CallMonitoringScreenState extends State<CallMonitoringScreen> {
         _status = 'Demo active';
       });
       
-      // Start the scammer script after a brief delay
       await Future.delayed(const Duration(seconds: 1));
       _runDemoScript();
       
@@ -166,17 +165,15 @@ class _CallMonitoringScreenState extends State<CallMonitoringScreen> {
       if (mounted && !_disposed) {
         setState(() {
           _isInitializing = false;
-          _pipelineActive = true; // still show as active even if ASR fails
+          _pipelineActive = true;
           _status = 'Demo (ASR unavailable)';
         });
-        // Run demo script anyway — scammer TTS + text still works
         await Future.delayed(const Duration(seconds: 1));
         _runDemoScript();
       }
     }
   }
   
-  /// Run through the scammer script line by line
   Future<void> _runDemoScript() async {
     final scenario = kDemoScenarios[widget.demoScenario];
     if (scenario == null || _disposed) return;
@@ -184,12 +181,11 @@ class _CallMonitoringScreenState extends State<CallMonitoringScreen> {
     _demoRunning = true;
     
     for (int i = 0; i < scenario.lines.length; i++) {
-      if (_disposed) return;
+      if (_disposed || _autoTakeoverTriggered) break;
       
       _demoLineIndex = i;
       final line = scenario.lines[i];
       
-      // Add scammer's line to transcript
       final cleaned = PiiService.stripPII(line.text);
       _callService.addTranscriptLine(
         cleaned,
@@ -198,26 +194,29 @@ class _CallMonitoringScreenState extends State<CallMonitoringScreen> {
       );
       _scrollToBottom();
       
-      // Speak it via TTS
       debugPrint('🔊 [DEMO] Scammer line ${i+1}: "${line.text.substring(0, 40)}..."');
-      await TtsService.speak(line.text);
+      await TtsService.speakAsScammer(line.text);
       
-      if (_disposed) return;
+      if (_disposed || _autoTakeoverTriggered) break;
       
-      // Send to backend for threat analysis
       _sendToBackend();
       
-      // Pause for user to respond
       await Future.delayed(Duration(milliseconds: (line.pauseAfterSec * 1000).toInt()));
       
-      if (_disposed) return;
+      if (_disposed || _autoTakeoverTriggered) break;
+    }
+    
+    // If takeover fired mid-script, stop the scammer's TTS immediately
+    if (_autoTakeoverTriggered) {
+      await TtsService.stop();
+      debugPrint('🛑 [DEMO] Script halted — AI takeover active');
     }
     
     _demoRunning = false;
     debugPrint('✅ [DEMO] Script finished');
   }
 
-  // ── Real mic pipeline (unchanged) ──
+  // ── Real mic pipeline ──
   Future<void> _initPipeline() async {
     try {
       if (!mounted) return;
@@ -292,7 +291,19 @@ class _CallMonitoringScreenState extends State<CallMonitoringScreen> {
     
     _threatService.analyzeText(
       transcript, recentLines, _callService.callDuration.inSeconds,
-    );
+    ).then((_) {
+      // ── Auto-dispatch takeover in demo mode ──
+      if (!_isDemoMode || _disposed || _autoTakeoverTriggered) return;
+      final analysis = _threatService.currentAnalysis;
+      if (analysis != null && analysis.threatLevel == 'CRITICAL') {
+        setState(() => _autoTakeoverTriggered = true);
+        debugPrint('🚨 [DEMO] Auto-dispatching Siren takeover (CRITICAL detected)');
+        // Small delay so the threat banner UI updates first
+        Future.delayed(const Duration(milliseconds: 800), () {
+          if (!_disposed && mounted) _activateTakeover('siren');
+        });
+      }
+    });
   }
   
   void _scrollToBottom() {
@@ -308,14 +319,14 @@ class _CallMonitoringScreenState extends State<CallMonitoringScreen> {
   }
   
   Future<void> _activateTakeover(String mode) async {
-    // Stop TTS first, then get & play takeover script 
     await TtsService.stop();
     final script = await ApiService.getTakeoverScript(mode);
     if (!mounted) return;
     
-    showModalBottomSheet(
+    // ignore: unused_local_variable
+    final sheetController = showModalBottomSheet(
       context: context,
-      backgroundColor: const Color(0xFF1A1D2E),
+      backgroundColor: const Color(0xFF111111),
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
       ),
@@ -329,7 +340,7 @@ class _CallMonitoringScreenState extends State<CallMonitoringScreen> {
               children: [
                 Icon(
                   mode == 'shield' ? Icons.shield : mode == 'interrogate' ? Icons.search : Icons.campaign,
-                  color: mode == 'shield' ? Colors.green : mode == 'interrogate' ? Colors.amber : Colors.red,
+                  color: mode == 'shield' ? const Color(0xFF34C759) : mode == 'interrogate' ? Colors.amber : Colors.red,
                   size: 28,
                 ),
                 const SizedBox(width: 12),
@@ -337,6 +348,10 @@ class _CallMonitoringScreenState extends State<CallMonitoringScreen> {
                   mode == 'shield' ? 'Shield Mode' : mode == 'interrogate' ? 'Interrogate' : 'Siren Mode',
                   style: GoogleFonts.inter(fontSize: 20, fontWeight: FontWeight.bold, color: Colors.white),
                 ),
+                if (_isDemoMode) ...[
+                  const Spacer(),
+                  Text('AUTO', style: GoogleFonts.inter(fontSize: 10, fontWeight: FontWeight.w700, color: const Color(0xFF34C759), letterSpacing: 1)),
+                ],
               ],
             ),
             const SizedBox(height: 16),
@@ -344,7 +359,7 @@ class _CallMonitoringScreenState extends State<CallMonitoringScreen> {
               width: double.infinity,
               padding: const EdgeInsets.all(16),
               decoration: BoxDecoration(
-                color: const Color(0xFF0D1117),
+                color: Colors.black,
                 borderRadius: BorderRadius.circular(12),
               ),
               child: Text(
@@ -359,13 +374,16 @@ class _CallMonitoringScreenState extends State<CallMonitoringScreen> {
               child: ElevatedButton.icon(
                 onPressed: () {
                   Navigator.pop(ctx);
-                  TtsService.speak(script);
+                  TtsService.speakAsAgent(script);
                 },
                 icon: const Icon(Icons.volume_up),
-                label: Text('Speak Now', style: GoogleFonts.inter(fontWeight: FontWeight.bold, fontSize: 16)),
+                label: Text(
+                  _isDemoMode ? 'AI Speaking...' : 'Speak Now',
+                  style: GoogleFonts.inter(fontWeight: FontWeight.bold, fontSize: 16),
+                ),
                 style: ElevatedButton.styleFrom(
-                  backgroundColor: const Color(0xFF6C63FF),
-                  foregroundColor: Colors.white,
+                  backgroundColor: const Color(0xFF34C759),
+                  foregroundColor: Colors.black,
                   shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
                 ),
               ),
@@ -375,6 +393,18 @@ class _CallMonitoringScreenState extends State<CallMonitoringScreen> {
         ),
       ),
     );
+    
+    // ── Demo mode: auto-speak and auto-dismiss ──
+    if (_isDemoMode) {
+      await Future.delayed(const Duration(milliseconds: 1200));
+      if (!mounted || _disposed) return;
+      TtsService.speakAsAgent(script).then((_) {
+        // Dismiss the sheet after TTS finishes
+        if (mounted && !_disposed && Navigator.canPop(context)) {
+          Navigator.pop(context);
+        }
+      });
+    }
   }
 
   @override
@@ -384,7 +414,6 @@ class _CallMonitoringScreenState extends State<CallMonitoringScreen> {
     _scrollController.dispose();
     TtsService.stop();
     
-    // Schedule service cleanup after frame to avoid notifyListeners-during-unmount
     final mic = _micService;
     final asr = _asrService;
     final call = _callService;
@@ -400,12 +429,17 @@ class _CallMonitoringScreenState extends State<CallMonitoringScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: const Color(0xFF0D1117),
+      backgroundColor: Colors.black,
       body: SafeArea(
         child: Column(
           children: [
             _buildTopBar(),
             _buildThreatBanner(),
+            // Voice Orb
+            const SizedBox(
+              height: 200,
+              child: Center(child: VoiceOrb()),
+            ),
             Expanded(child: _buildTranscript()),
             _buildTakeoverBar(),
             _buildBottomStatus(),
@@ -424,7 +458,7 @@ class _CallMonitoringScreenState extends State<CallMonitoringScreen> {
         
         return Container(
           padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-          color: const Color(0xFF0D1117),
+          color: Colors.black,
           child: Row(
             children: [
               IconButton(
@@ -438,7 +472,7 @@ class _CallMonitoringScreenState extends State<CallMonitoringScreen> {
               Container(
                 width: 8, height: 8,
                 decoration: BoxDecoration(
-                  color: _pipelineActive ? const Color(0xFFFF4757) : Colors.grey,
+                  color: _pipelineActive ? const Color(0xFF34C759) : Colors.grey,
                   shape: BoxShape.circle,
                 ),
               ).animate(onPlay: (c) => c.repeat(reverse: true))
@@ -448,7 +482,7 @@ class _CallMonitoringScreenState extends State<CallMonitoringScreen> {
                 _isDemoMode ? 'DEMO' : (_pipelineActive ? 'LIVE' : 'PAUSED'),
                 style: GoogleFonts.inter(
                   fontSize: 12, fontWeight: FontWeight.w700,
-                  color: _isDemoMode ? const Color(0xFF6C63FF) : (_pipelineActive ? const Color(0xFFFF4757) : Colors.grey),
+                  color: _isDemoMode ? const Color(0xFF34C759) : (_pipelineActive ? const Color(0xFF34C759) : Colors.grey),
                   letterSpacing: 1.5,
                 ),
               ),
@@ -466,7 +500,7 @@ class _CallMonitoringScreenState extends State<CallMonitoringScreen> {
     );
   }
   
-  // ── Threat Banner (compact) ──
+  // ── Threat Banner ──
   Widget _buildThreatBanner() {
     return Consumer<ThreatService>(
       builder: (context, ts, _) {
@@ -482,7 +516,7 @@ class _CallMonitoringScreenState extends State<CallMonitoringScreen> {
           margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
           padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
           decoration: BoxDecoration(
-            color: isAlert ? color.withValues(alpha: 0.15) : const Color(0xFF161B22),
+            color: isAlert ? color.withValues(alpha: 0.15) : const Color(0xFF111111),
             borderRadius: BorderRadius.circular(14),
             border: Border.all(color: color.withValues(alpha: 0.4), width: isAlert ? 1.5 : 0.5),
           ),
@@ -572,7 +606,7 @@ class _CallMonitoringScreenState extends State<CallMonitoringScreen> {
                     children: [
                       const SizedBox(
                         width: 32, height: 32,
-                        child: CircularProgressIndicator(strokeWidth: 2, color: Color(0xFF6C63FF)),
+                        child: CircularProgressIndicator(strokeWidth: 2, color: Color(0xFF34C759)),
                       ),
                       const SizedBox(height: 16),
                       Text(_status, style: GoogleFonts.inter(fontSize: 14, color: Colors.white38)),
@@ -607,7 +641,7 @@ class _CallMonitoringScreenState extends State<CallMonitoringScreen> {
                       width: 3, height: 20,
                       margin: const EdgeInsets.only(top: 2, right: 10),
                       decoration: BoxDecoration(
-                        color: const Color(0xFF6C63FF).withValues(alpha: 0.4),
+                        color: const Color(0xFF34C759).withValues(alpha: 0.4),
                         borderRadius: BorderRadius.circular(2),
                       ),
                     ),
@@ -626,7 +660,7 @@ class _CallMonitoringScreenState extends State<CallMonitoringScreen> {
             
             final line = lines[index];
             final isScammer = line.isScammer;
-            final barColor = isScammer ? const Color(0xFFFF4757) : const Color(0xFF6C63FF);
+            final barColor = isScammer ? const Color(0xFFFF453A) : const Color(0xFF34C759);
             
             return Padding(
               padding: const EdgeInsets.symmetric(vertical: 5),
@@ -654,7 +688,7 @@ class _CallMonitoringScreenState extends State<CallMonitoringScreen> {
                               style: GoogleFonts.inter(
                                 fontSize: 10,
                                 fontWeight: FontWeight.w700,
-                                color: isScammer ? const Color(0xFFFF4757).withValues(alpha: 0.7) : const Color(0xFF6C63FF).withValues(alpha: 0.7),
+                                color: isScammer ? const Color(0xFFFF453A).withValues(alpha: 0.7) : const Color(0xFF34C759).withValues(alpha: 0.7),
                                 letterSpacing: 0.5,
                               ),
                             ),
@@ -672,11 +706,11 @@ class _CallMonitoringScreenState extends State<CallMonitoringScreen> {
                             padding: const EdgeInsets.only(top: 2),
                             child: Row(
                               children: [
-                                Icon(Icons.security, size: 10, color: Colors.green.withValues(alpha: 0.5)),
+                                Icon(Icons.security, size: 10, color: const Color(0xFF34C759).withValues(alpha: 0.5)),
                                 const SizedBox(width: 4),
                                 Text(
                                   'PII stripped',
-                                  style: GoogleFonts.inter(fontSize: 10, color: Colors.green.withValues(alpha: 0.5)),
+                                  style: GoogleFonts.inter(fontSize: 10, color: const Color(0xFF34C759).withValues(alpha: 0.5)),
                                 ),
                               ],
                             ),
@@ -701,12 +735,52 @@ class _CallMonitoringScreenState extends State<CallMonitoringScreen> {
         
         if (!isAlert) return const SizedBox.shrink();
         
+        // ── Demo mode: AI handles it autonomously, no manual buttons ──
+        if (_isDemoMode) {
+          return Container(
+            padding: const EdgeInsets.fromLTRB(16, 10, 16, 10),
+            margin: const EdgeInsets.symmetric(horizontal: 16),
+            decoration: BoxDecoration(
+              color: _autoTakeoverTriggered
+                  ? const Color(0xFFFF453A).withValues(alpha: 0.12)
+                  : const Color(0xFF34C759).withValues(alpha: 0.08),
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(
+                color: _autoTakeoverTriggered
+                    ? const Color(0xFFFF453A).withValues(alpha: 0.3)
+                    : const Color(0xFF34C759).withValues(alpha: 0.15),
+              ),
+            ),
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                Icon(
+                  _autoTakeoverTriggered ? Icons.campaign : Icons.psychology,
+                  color: _autoTakeoverTriggered ? const Color(0xFFFF453A) : const Color(0xFF34C759),
+                  size: 18,
+                ),
+                const SizedBox(width: 8),
+                Text(
+                  _autoTakeoverTriggered ? 'AI TAKEOVER ACTIVE' : 'AI MONITORING — WILL INTERVENE',
+                  style: GoogleFonts.inter(
+                    fontSize: 11,
+                    fontWeight: FontWeight.w700,
+                    color: _autoTakeoverTriggered ? const Color(0xFFFF453A) : const Color(0xFF34C759),
+                    letterSpacing: 0.8,
+                  ),
+                ),
+              ],
+            ),
+          ).animate().fadeIn(duration: 400.ms).slideY(begin: 0.2);
+        }
+        
+        // ── Real mode: manual takeover buttons ──
         return Container(
           padding: const EdgeInsets.fromLTRB(16, 8, 16, 8),
           child: Row(
             children: [
               Expanded(
-                child: _takeoverBtn('Shield', Icons.shield_outlined, const Color(0xFF5FD068), 'shield'),
+                child: _takeoverBtn('Shield', Icons.shield_outlined, const Color(0xFF34C759), 'shield'),
               ),
               const SizedBox(width: 10),
               Expanded(
@@ -714,7 +788,7 @@ class _CallMonitoringScreenState extends State<CallMonitoringScreen> {
               ),
               const SizedBox(width: 10),
               Expanded(
-                child: _takeoverBtn('Siren', Icons.campaign, const Color(0xFFFF4757), 'siren'),
+                child: _takeoverBtn('Siren', Icons.campaign, const Color(0xFFFF453A), 'siren'),
               ),
             ],
           ),
@@ -750,7 +824,7 @@ class _CallMonitoringScreenState extends State<CallMonitoringScreen> {
     return Container(
       padding: const EdgeInsets.all(12),
       decoration: BoxDecoration(
-        color: const Color(0xFF0D1117),
+        color: Colors.black,
         border: Border(top: BorderSide(color: Colors.white.withValues(alpha: 0.06))),
       ),
       child: Row(
@@ -759,7 +833,7 @@ class _CallMonitoringScreenState extends State<CallMonitoringScreen> {
           Container(
             width: 6, height: 6,
             decoration: BoxDecoration(
-              color: _pipelineActive ? Colors.green : Colors.orange,
+              color: _pipelineActive ? const Color(0xFF34C759) : Colors.orange,
               shape: BoxShape.circle,
             ),
           ),

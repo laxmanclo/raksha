@@ -5,6 +5,13 @@ import 'package:provider/provider.dart';
 import '../services/threat_service.dart';
 import '../services/tts_service.dart';
 
+/// AI takeover action buttons.
+///
+/// HCI rationale:
+/// - Hidden when no threat (progressive disclosure: reduce cognitive load)
+/// - Appears only when actionable (Gestalt: figure/ground — actions emerge from background)
+/// - Large tap targets for stressed users (Fitts's Law)
+/// - Confirmation dialog prevents accidental activation (error prevention)
 class TakeoverButtons extends StatelessWidget {
   const TakeoverButtons({super.key});
 
@@ -16,160 +23,73 @@ class TakeoverButtons extends StatelessWidget {
         final scripts = analysis?.takeoverScripts;
         final isAlert = analysis?.isAlert ?? false;
 
+        // Inactive: one-liner status
         if (!isAlert || scripts == null) {
-          return Container(
-            padding: const EdgeInsets.all(20),
-            decoration: BoxDecoration(
-              color: const Color(0xFF1D1F33),
-              borderRadius: BorderRadius.circular(16),
-              border: Border.all(
-                color: Colors.white.withValues(alpha: 0.1),
+          return Row(
+            children: [
+              Icon(Icons.shield_outlined,
+                  size: 16,
+                  color: Colors.white.withValues(alpha: 0.25)),
+              const SizedBox(width: 8),
+              Text(
+                'AI takeover available when threat detected',
+                style: GoogleFonts.inter(
+                  fontSize: 12,
+                  color: const Color(0xFF333333),
+                ),
               ),
-            ),
-            child: Row(
-              children: [
-                Icon(
-                  Icons.shield_outlined,
-                  color: Colors.white.withValues(alpha: 0.5),
-                  size: 24,
-                ),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: Text(
-                    'AI Takeover available when threat detected',
-                    style: GoogleFonts.inter(
-                      fontSize: 13,
-                      color: Colors.white60,
-                    ),
-                  ),
-                ),
-              ],
-            ),
+            ],
           );
         }
 
-        return Column(
+        // Active: three action buttons
+        return Row(
           children: [
-            // Title
-            Padding(
-              padding: const EdgeInsets.only(bottom: 16),
-              child: Text(
-                '🤖 AI Takeover Ready',
-                style: GoogleFonts.inter(
-                  fontSize: 16,
-                  fontWeight: FontWeight.w600,
-                  color: Colors.white,
-                ),
+            Expanded(
+              child: _ActionButton(
+                icon: Icons.shield_rounded,
+                label: 'Shield',
+                color: const Color(0xFF34C759),
+                onTap: () => _confirmTakeover(context, 'Shield', scripts.shield),
               ),
-            ).animate().fadeIn(duration: 600.ms),
-
-            // Takeover Mode Buttons
-            Row(
-              children: [
-                Expanded(
-                  child: _buildTakeoverButton(
-                    context,
-                    icon: '🛡️',
-                    label: 'Shield',
-                    description: 'Clean exit',
-                    color: const Color(0xFF5FD068),
-                    script: scripts.shield,
-                  ),
-                ),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: _buildTakeoverButton(
-                    context,
-                    icon: '🔍',
-                    label: 'Interrogate',
-                    description: 'Expose them',
-                    color: const Color(0xFFFFA502),
-                    script: scripts.interrogate,
-                  ),
-                ),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: _buildTakeoverButton(
-                    context,
-                    icon: '🚨',
-                    label: 'Siren',
-                    description: 'Scare off',
-                    color: const Color(0xFFFF4757),
-                    script: scripts.siren,
-                  ),
-                ),
-              ],
-            ).animate().fadeIn(delay: 300.ms, duration: 600.ms).slideY(begin: 0.3),
+            ),
+            const SizedBox(width: 10),
+            Expanded(
+              child: _ActionButton(
+                icon: Icons.search_rounded,
+                label: 'Interrogate',
+                color: const Color(0xFFFF9F0A),
+                onTap: () =>
+                    _confirmTakeover(context, 'Interrogate', scripts.interrogate),
+              ),
+            ),
+            const SizedBox(width: 10),
+            Expanded(
+              child: _ActionButton(
+                icon: Icons.campaign_rounded,
+                label: 'Siren',
+                color: const Color(0xFFFF453A),
+                onTap: () => _confirmTakeover(context, 'Siren', scripts.siren),
+              ),
+            ),
           ],
-        );
+        ).animate().fadeIn(duration: 400.ms).slideY(begin: 0.15);
       },
     );
   }
 
-  Widget _buildTakeoverButton(
-    BuildContext context, {
-    required String icon,
-    required String label,
-    required String description,
-    required Color color,
-    required String script,
-  }) {
-    return InkWell(
-      onTap: () => _activateTakeover(context, label, script),
-      child: Container(
-        padding: const EdgeInsets.all(16),
-        decoration: BoxDecoration(
-          color: color.withValues(alpha: 0.15),
-          borderRadius: BorderRadius.circular(16),
-          border: Border.all(
-            color: color,
-            width: 2,
-          ),
-        ),
-        child: Column(
-          children: [
-            Text(
-              icon,
-              style: const TextStyle(fontSize: 32),
-            ),
-            const SizedBox(height: 8),
-            Text(
-              label,
-              style: GoogleFonts.inter(
-                fontSize: 14,
-                fontWeight: FontWeight.bold,
-                color: Colors.white,
-              ),
-            ),
-            const SizedBox(height: 4),
-            Text(
-              description,
-              style: GoogleFonts.inter(
-                fontSize: 10,
-                color: Colors.white70,
-              ),
-              textAlign: TextAlign.center,
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  void _activateTakeover(BuildContext context, String mode, String script) {
-    // Show dialog
+  void _confirmTakeover(BuildContext context, String mode, String script) {
     showDialog(
       context: context,
-      builder: (context) => AlertDialog(
-        backgroundColor: const Color(0xFF1D1F33),
-        shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(20),
-        ),
+      builder: (ctx) => AlertDialog(
+        backgroundColor: const Color(0xFF111111),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
         title: Text(
-          '🤖 AI Taking Over',
+          'Activate $mode',
           style: GoogleFonts.inter(
+            fontSize: 17,
+            fontWeight: FontWeight.w600,
             color: Colors.white,
-            fontWeight: FontWeight.bold,
           ),
         ),
         content: Column(
@@ -177,24 +97,24 @@ class TakeoverButtons extends StatelessWidget {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Text(
-              'Mode: $mode',
+              'The AI will speak the following on your behalf:',
               style: GoogleFonts.inter(
-                color: Colors.white70,
-                fontWeight: FontWeight.w600,
+                fontSize: 13,
+                color: const Color(0xFF666666),
               ),
             ),
-            const SizedBox(height: 16),
+            const SizedBox(height: 14),
             Container(
-              padding: const EdgeInsets.all(16),
+              padding: const EdgeInsets.all(14),
               decoration: BoxDecoration(
-                color: const Color(0xFF0A0E21),
+                color: const Color(0xFF1A1A1A),
                 borderRadius: BorderRadius.circular(12),
               ),
               child: Text(
                 script,
                 style: GoogleFonts.inter(
-                  color: Colors.white,
                   fontSize: 14,
+                  color: Colors.white,
                   height: 1.5,
                 ),
               ),
@@ -203,44 +123,86 @@ class TakeoverButtons extends StatelessWidget {
         ),
         actions: [
           TextButton(
-            onPressed: () => Navigator.pop(context),
+            onPressed: () => Navigator.pop(ctx),
             child: Text(
               'Cancel',
-              style: GoogleFonts.inter(color: Colors.white60),
+              style: GoogleFonts.inter(color: const Color(0xFF666666)),
             ),
           ),
-          ElevatedButton(
+          TextButton(
             onPressed: () {
-              Navigator.pop(context);
+              Navigator.pop(ctx);
               TtsService.speak(script);
-              
               ScaffoldMessenger.of(context).showSnackBar(
                 SnackBar(
                   content: Text(
-                    '🔊 AI is speaking...',
-                    style: GoogleFonts.inter(),
+                    'AI speaking...',
+                    style: GoogleFonts.inter(
+                      fontSize: 14,
+                      color: Colors.white,
+                    ),
                   ),
-                  backgroundColor: const Color(0xFF6C63FF),
-                  behavior: SnackBarBehavior.floating,
-                  shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(10),
-                  ),
+                  backgroundColor: const Color(0xFF34C759),
+                  duration: const Duration(seconds: 3),
                 ),
               );
             },
-            style: ElevatedButton.styleFrom(
-              backgroundColor: const Color(0xFF6C63FF),
+            style: TextButton.styleFrom(
+              backgroundColor: const Color(0xFF34C759),
               foregroundColor: Colors.white,
               shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(10),
-              ),
+                  borderRadius: BorderRadius.circular(10)),
+              padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
             ),
             child: Text(
               'Activate',
-              style: GoogleFonts.inter(fontWeight: FontWeight.bold),
+              style: GoogleFonts.inter(fontWeight: FontWeight.w600),
             ),
           ),
         ],
+      ),
+    );
+  }
+}
+
+class _ActionButton extends StatelessWidget {
+  final IconData icon;
+  final String label;
+  final Color color;
+  final VoidCallback onTap;
+
+  const _ActionButton({
+    required this.icon,
+    required this.label,
+    required this.color,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      onTap: onTap,
+      child: Container(
+        padding: const EdgeInsets.symmetric(vertical: 14),
+        decoration: BoxDecoration(
+          color: color.withValues(alpha: 0.12),
+          borderRadius: BorderRadius.circular(14),
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(icon, color: color, size: 24),
+            const SizedBox(height: 6),
+            Text(
+              label,
+              style: GoogleFonts.inter(
+                fontSize: 12,
+                fontWeight: FontWeight.w600,
+                color: color,
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }

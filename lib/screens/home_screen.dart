@@ -23,7 +23,7 @@ class _HomeScreenState extends State<HomeScreen> {
     super.initState();
     _checkBackend();
   }
-  
+
   Future<void> _checkBackend() async {
     final ok = await ApiService.checkHealth();
     if (mounted) setState(() { _backendOnline = ok; _checking = false; });
@@ -32,7 +32,6 @@ class _HomeScreenState extends State<HomeScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: const Color(0xFF0D1117),
       body: SafeArea(
         child: Padding(
           padding: const EdgeInsets.symmetric(horizontal: 28),
@@ -40,29 +39,31 @@ class _HomeScreenState extends State<HomeScreen> {
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               const SizedBox(height: 60),
-              
-              // Logo
+
+              // Header
               Text(
                 'Raksha',
                 style: GoogleFonts.inter(
-                  fontSize: 44,
-                  fontWeight: FontWeight.w800,
-                  foreground: Paint()
-                    ..shader = const LinearGradient(
-                      colors: [Color(0xFF6C63FF), Color(0xFFFF6584)],
-                    ).createShader(const Rect.fromLTWH(0, 0, 200, 70)),
+                  fontSize: 42,
+                  fontWeight: FontWeight.w700,
+                  color: Colors.white,
+                  letterSpacing: -1.5,
                 ),
               ).animate().fadeIn(duration: 500.ms),
-              
+
               const SizedBox(height: 6),
-              
+
               Text(
                 'AI scam call protection',
-                style: GoogleFonts.inter(fontSize: 16, color: Colors.white38, letterSpacing: 0.3),
+                style: GoogleFonts.inter(
+                  fontSize: 16,
+                  color: Colors.white38,
+                  letterSpacing: 0.3,
+                ),
               ).animate().fadeIn(delay: 200.ms, duration: 500.ms),
-              
+
               const SizedBox(height: 48),
-              
+
               // Feature chips
               _chip(Icons.mic_none, 'On-device ASR', 'Audio never leaves phone'),
               const SizedBox(height: 12),
@@ -71,17 +72,19 @@ class _HomeScreenState extends State<HomeScreen> {
               _chip(Icons.shield_outlined, 'AI takeover', 'Auto-respond to scammers'),
               const SizedBox(height: 12),
               _chip(Icons.fingerprint, 'PII stripping', 'Sensitive data stays private'),
-              
+
               const Spacer(),
-              
-              // Status
+
+              // Backend status
               Row(
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: [
                   Container(
                     width: 7, height: 7,
                     decoration: BoxDecoration(
-                      color: _checking ? Colors.orange : (_backendOnline ? Colors.green : Colors.red),
+                      color: _checking
+                          ? const Color(0xFFFF9F0A)
+                          : (_backendOnline ? const Color(0xFF34C759) : const Color(0xFFFF453A)),
                       shape: BoxShape.circle,
                     ),
                   ),
@@ -92,38 +95,44 @@ class _HomeScreenState extends State<HomeScreen> {
                   ),
                 ],
               ),
-              
+
               const SizedBox(height: 16),
-              
-              // Start button
+
+              // Start monitoring button
               SizedBox(
                 width: double.infinity,
-                height: 58,
+                height: 56,
                 child: ElevatedButton(
                   onPressed: () {
                     context.read<CallService>().clearTranscript();
                     context.read<ThreatService>().clearAnalysis();
                     Navigator.push(
                       context,
-                      MaterialPageRoute(builder: (_) => const CallMonitoringScreen()),
+                      PageRouteBuilder(
+                        pageBuilder: (_, __, ___) => const CallMonitoringScreen(),
+                        transitionsBuilder: (_, anim, __, child) {
+                          return FadeTransition(opacity: anim, child: child);
+                        },
+                        transitionDuration: const Duration(milliseconds: 300),
+                      ),
                     );
                   },
                   style: ElevatedButton.styleFrom(
-                    backgroundColor: const Color(0xFF6C63FF),
-                    foregroundColor: Colors.white,
+                    backgroundColor: const Color(0xFF34C759),
+                    foregroundColor: Colors.black,
                     elevation: 0,
                     shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
                   ),
                   child: Text(
                     'Start Monitoring',
-                    style: GoogleFonts.inter(fontSize: 17, fontWeight: FontWeight.w700, letterSpacing: 0.3),
+                    style: GoogleFonts.inter(fontSize: 16, fontWeight: FontWeight.w600, letterSpacing: 0.3),
                   ),
                 ),
-              ).animate().fadeIn(delay: 600.ms, duration: 500.ms).slideY(begin: 0.15),
-              
+              ).animate().fadeIn(delay: 600.ms, duration: 500.ms),
+
               const SizedBox(height: 14),
-              
-              // Demo scenario buttons
+
+              // Demo scenario buttons (from friend's code)
               Row(
                 children: [
                   Expanded(
@@ -135,7 +144,7 @@ class _HomeScreenState extends State<HomeScreen> {
                   ),
                 ],
               ).animate().fadeIn(delay: 700.ms, duration: 500.ms),
-              
+
               const SizedBox(height: 32),
             ],
           ),
@@ -143,7 +152,7 @@ class _HomeScreenState extends State<HomeScreen> {
       ),
     );
   }
-  
+
   Widget _demoBtn(BuildContext context, String label, IconData icon, String scenario) {
     return SizedBox(
       height: 46,
@@ -166,18 +175,18 @@ class _HomeScreenState extends State<HomeScreen> {
       ),
     );
   }
-  
+
   Widget _chip(IconData icon, String title, String sub) {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
       decoration: BoxDecoration(
-        color: const Color(0xFF161B22),
+        color: const Color(0xFF111111),
         borderRadius: BorderRadius.circular(14),
         border: Border.all(color: Colors.white.withValues(alpha: 0.06)),
       ),
       child: Row(
         children: [
-          Icon(icon, color: const Color(0xFF6C63FF), size: 22),
+          Icon(icon, color: const Color(0xFF34C759), size: 22),
           const SizedBox(width: 14),
           Expanded(
             child: Column(

@@ -68,8 +68,8 @@ class ModelManager {
       'encoder.int8.onnx',
     );
     paths['decoder'] = await copyAssetToFile(
-      'assets/models/decoder.onnx',
-      'decoder.onnx',
+      'assets/models/decoder.int8.onnx',
+      'decoder.int8.onnx',
     );
     paths['joiner'] = await copyAssetToFile(
       'assets/models/joiner.int8.onnx',
@@ -95,7 +95,7 @@ class ModelManager {
   static Future<List<String>> checkMissingModels() async {
     final required = [
       'assets/models/encoder.int8.onnx',
-      'assets/models/decoder.onnx',
+      'assets/models/decoder.int8.onnx',
       'assets/models/joiner.int8.onnx',
       'assets/models/tokens.txt',
       'assets/models/silero_vad.onnx',

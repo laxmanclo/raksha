@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:math' as math;
 import 'dart:typed_data';
 import 'package:flutter/foundation.dart';
 import 'package:record/record.dart';
@@ -7,10 +8,15 @@ import 'package:record/record.dart';
 /// Captures PCM audio at 16kHz for Sherpa ONNX processing
 class MicrophoneService extends ChangeNotifier {
   bool _isRecording = false;
+  double _audioLevel = 0.0;
   final AudioRecorder _recorder = AudioRecorder();
   StreamSubscription? _recordingSubscription;
   
   bool get isRecording => _isRecording;
+  
+  /// Current audio amplitude level (0.0 - 1.0), computed from RMS.
+  /// Used by the VoiceOrb widget for real-time visual feedback.
+  double get audioLevel => _audioLevel;
   
   /// Start capturing audio from microphone with a direct callback.
   /// [onAudioData] is called for every audio chunk as Float32List,
@@ -72,6 +78,20 @@ class MicrophoneService extends ChangeNotifier {
             
             // Convert Int16 to Float32 for Sherpa ONNX
             final float32Data = _convertInt16ToFloat32(int16Data);
+            
+            // Compute RMS amplitude for the voice orb
+            double sumSquares = 0;
+            for (int i = 0; i < float32Data.length; i++) {
+              sumSquares += float32Data[i] * float32Data[i];
+            }
+            final rms = math.sqrt(sumSquares / float32Data.length);
+            // Clamp to 0-1, apply slight amplification for visual impact
+            _audioLevel = (rms * 3.0).clamp(0.0, 1.0);
+            
+            // Notify listeners every 3rd chunk to avoid flooding
+            if (chunkCount % 3 == 0 && hasListeners) {
+              notifyListeners();
+            }
             
             // Direct callback — no broadcast stream intermediary
             onAudioData(float32Data);
