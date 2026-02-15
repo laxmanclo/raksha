@@ -39,9 +39,4 @@ flutter:
   
   assets:
     - assets/models/
-    - assets/models/encoder.int8.onnx
-    - assets/models/decoder.onnx
-    - assets/models/joiner.int8.onnx
-    - assets/models/tokens.txt
-    - assets/models/silero_vad.onnx
     - assets/images/
